@@ -1,16 +1,15 @@
 <?php
 require 'functions.php';
+// NEW: Start session to handle CSRF tokens
+session_start();
 
-// It's good practice to handle potential errors from your functions.
-// For example, what if the database connection fails?
-$users = getAllUsers(); 
+// NEW: Generate CSRF token for security
+if (empty($_SESSION['csrf_token'])) {
+    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+}
+$csrfToken = $_SESSION['csrf_token'];
 
-// Generate a CSRF token if you have a session-based login system.
-// session_start();
-// if (empty($_SESSION['csrf_token'])) {
-//     $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
-// }
-// $csrfToken = $_SESSION['csrf_token'];
+$users = getAllUsers();
 ?>
 
 <!DOCTYPE html>
@@ -40,7 +39,6 @@ $users = getAllUsers();
             position: fixed; top: 0; left: 0; right: 0; bottom: 0;
             background: rgba(0,0,0,0.5); z-index: 999;
         }
-        /* Simple spinner for loading state */
         .spinner {
             border: 4px solid rgba(0, 0, 0, 0.1);
             width: 36px;
@@ -55,9 +53,7 @@ $users = getAllUsers();
 <body class="bg-gray-100">
     <!-- Popup Modal -->
     <div id="popup-modal" class="popup hidden">
-        <div id="popup-icon-container" class="flex justify-center mb-4">
-            <!-- Icon will be inserted here by JS -->
-        </div>
+        <div id="popup-icon-container" class="flex justify-center mb-4"></div>
         <h3 id="popup-title" class="text-lg font-bold mb-2">Info</h3>
         <p id="popup-message" class="text-gray-600 mb-4">Message goes here.</p>
         <button id="close-popup" class="bg-blue-600 text-white px-6 py-2 rounded-lg hover:bg-blue-700">OK</button>
@@ -69,6 +65,8 @@ $users = getAllUsers();
 
         <div class="bg-white p-6 rounded-lg shadow-md mb-6">
             <h2 class="text-xl font-semibold mb-4 text-gray-700">User Management</h2>
+            <!-- NEW: Add CSRF token to your page -->
+            <input type="hidden" id="csrf-token" value="<?php echo $csrfToken; ?>">
             <div class="space-y-4 md:space-y-0 md:flex md:space-x-2">
                 <input type="text" id="user-id-input" class="w-full md:w-1/3 p-2 border border-gray-300 rounded-lg" placeholder="Enter User ID">
                 <input type="text" id="ban-reason-input" class="w-full md:w-1/3 p-2 border border-gray-300 rounded-lg" placeholder="Reason (for banning)">
@@ -97,11 +95,12 @@ $users = getAllUsers();
                         </tr>
                     </thead>
                     <tbody id="user-table-body">
-                        <?php if (is_array($users)): foreach ($users as $user): ?>
+                        <?php if (is_array($users) && !empty($users)): foreach ($users as $user): ?>
+                        <!-- FIXED: All outputs are now sanitized with htmlspecialchars -->
                         <tr id="user-row-<?php echo htmlspecialchars($user['user_id']); ?>">
                             <td class="py-4 px-4 border-b border-gray-200 text-sm"><?php echo htmlspecialchars($user['user_id']); ?></td>
-                            <td class="py-4 px-4 border-b border-gray-200 text-sm"><?php echo htmlspecialchars($user['first_name'] . ' ' . $user['last_name']); ?></td>
-                            <td class="py-4 px-4 border-b border-gray-200 text-sm">₹<?php echo htmlspecialchars(number_format($user['balance'], 2)); ?></td>
+                            <td class="py-4 px-4 border-b border-gray-200 text-sm"><?php echo htmlspecialchars(trim($user['first_name'] . ' ' . $user['last_name'])); ?></td>
+                            <td class="py-4 px-4 border-b border-gray-200 text-sm">$<?php echo htmlspecialchars(number_format($user['balance'], 2)); ?></td>
                             <td class="py-4 px-4 border-b border-gray-200 text-sm status-cell">
                                 <?php if ($user['is_banned']): ?>
                                     <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-red-100 text-red-800">
@@ -125,9 +124,6 @@ $users = getAllUsers();
         </div>
     </div>
 
-    <!-- Add CSRF token to your page -->
-    <!-- <input type="hidden" id="csrf-token" value="<?php echo $csrfToken; ?>"> -->
-
     <script>
         lucide.createIcons();
 
@@ -149,7 +145,7 @@ $users = getAllUsers();
             else if (type === 'error') popupIconContainer.innerHTML = errorIcon;
             else popupIconContainer.innerHTML = infoIcon;
             
-            lucide.createIcons(); // Re-render icons inside the popup
+            lucide.createIcons();
             popupModal.classList.remove('hidden');
             overlay.classList.remove('hidden');
         }
@@ -163,13 +159,19 @@ $users = getAllUsers();
         const reasonInput = document.getElementById('ban-reason-input');
         const banBtn = document.getElementById('ban-btn');
         const unbanBtn = document.getElementById('unban-btn');
+        // FIXED: Get CSRF token from the hidden input
+        const csrfToken = document.getElementById('csrf-token').value;
         
-        // Generic function to handle API requests
         async function handleUserAction(endpoint, body) {
-            // Set loading state
             banBtn.disabled = true;
             unbanBtn.disabled = true;
+            const originalBanBtnHtml = banBtn.innerHTML;
+            const originalUnbanBtnHtml = unbanBtn.innerHTML;
             banBtn.innerHTML = `<div class="spinner mx-auto"></div>`;
+            unbanBtn.innerHTML = `...`;
+            
+            // FIXED: Add CSRF token to the request body
+            body.csrf_token = csrfToken;
 
             try {
                 const response = await fetch(endpoint, {
@@ -181,22 +183,19 @@ $users = getAllUsers();
                 const data = await response.json();
 
                 if (!response.ok) {
-                    // Handle HTTP errors like 400, 405, 500
                     showPopup('Error', data.message || 'An unexpected error occurred.', 'error');
                 } else {
-                    // Handle success from our API
                     showPopup('Success', data.message, 'success');
-                    updateTableRow(body.user_id, endpoint.includes('ban'));
+                    updateTableRow(body.user_id, endpoint.includes('ban_user.php'));
                 }
             } catch (error) {
-                // Handle network errors
                 console.error('Fetch Error:', error);
                 showPopup('Network Error', 'Could not connect to the server.', 'error');
             } finally {
-                // Restore buttons
                 banBtn.disabled = false;
                 unbanBtn.disabled = false;
-                banBtn.innerHTML = `<i data-lucide="user-x" class="w-5 h-5"></i><span>Ban</span>`;
+                banBtn.innerHTML = originalBanBtnHtml;
+                unbanBtn.innerHTML = originalUnbanBtnHtml;
                 lucide.createIcons();
             }
         }
@@ -228,10 +227,9 @@ $users = getAllUsers();
             handleUserAction('unban_user.php', { user_id: userId });
         });
 
-        // Function to update the table row without reloading the page
         function updateTableRow(userId, isBanned) {
             const row = document.getElementById(`user-row-${userId}`);
-            if (!row) return; // User might not be on the current page
+            if (!row) return;
 
             const statusCell = row.querySelector('.status-cell');
             const reason = reasonInput.value.trim();
@@ -248,7 +246,49 @@ $users = getAllUsers();
             }
             statusCell.innerHTML = newStatusHtml;
         }
-
     </script>
 </body>
-</html>
+</html>```
+
+---
+### `ban_user.php`
+*Rewritten to include CSRF validation and proper HTTP responses.*
+
+```php
+<?php
+header('Content-Type: application/json');
+require 'functions.php';
+session_start(); // NEW: Start session to access CSRF token
+
+// --- 1. Check Request Method ---
+if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+    http_response_code(405); // Method Not Allowed
+    echo json_encode(['status' => 'error', 'message' => 'Invalid request method.']);
+    exit;
+}
+
+// --- 2. CSRF Token Validation ---
+if (!isset($_POST['csrf_token']) || !isset($_SESSION['csrf_token']) || !hash_equals($_SESSION['csrf_token'], $_POST['csrf_token'])) {
+    http_response_code(403); // Forbidden
+    echo json_encode(['status' => 'error', 'message' => 'Invalid CSRF token. Request denied.']);
+    exit;
+}
+
+// --- 3. Validate Input ---
+if (empty(trim($_POST['user_id'])) || empty(trim($_POST['reason']))) {
+    http_response_code(400); // Bad Request
+    echo json_encode(['status' => 'error', 'message' => 'Missing required fields: user_id and reason.']);
+    exit;
+}
+
+// --- 4. Process Data ---
+$userId = trim($_POST['user_id']);
+$reason = trim($_POST['reason']);
+
+if (banUser($userId, $reason)) {
+    echo json_encode(['status' => 'success', 'message' => 'User ' . htmlspecialchars($userId) . ' has been banned.']);
+} else {
+    http_response_code(500); // Internal Server Error
+    echo json_encode(['status' => 'error', 'message' => 'Failed to ban the user. The user may not exist or an internal error occurred.']);
+}
+?>
